@@ -13,6 +13,7 @@ import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
+import java.io.ByteArrayOutputStream
 import java.util.Locale
 
 class MainActivity : Activity() {
@@ -25,7 +26,10 @@ class MainActivity : Activity() {
     private var currentId: String? = null
     private var viewingFile = false
 
+    // เก็บประวัติโฟลเดอร์เพื่อให้ย้อนกลับได้
+    private val folderHistory = mutableListOf<String>()
     private val folderRequest = 200
+    private val maxFileSize = 1024 * 1024
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -78,7 +82,6 @@ class MainActivity : Activity() {
 
         backButton.setOnClickListener {
             if (viewingFile) {
-                viewingFile = false
                 showFiles()
             } else {
                 goBack()
@@ -107,10 +110,12 @@ class MainActivity : Activity() {
                         Intent.FLAG_GRANT_WRITE_URI_PERMISSION
                 )
             } catch (_: Exception) {
+                // อนุญาตเฉพาะสิทธิ์ที่ Android ให้ได้
             }
 
             treeUri = uri
             currentId = DocumentsContract.getTreeDocumentId(uri)
+            folderHistory.clear()
             viewingFile = false
             showFiles()
         }
@@ -177,13 +182,15 @@ class MainActivity : Activity() {
                     ""
                 } else {
                     name.substringAfterLast('.', "")
-                        .takeIf { name.contains(".") && it.isNotBlank() }
-                        ?: "ไม่มีนามสกุล"
+                        .takeIf {
+                            name.contains(".") && it.isNotBlank()
+                        } ?: "ไม่มีนามสกุล"
                 }
 
                 val typeText = when {
                     isFolder -> "โฟลเดอร์"
-                    extension == "ไม่มีนามสกุล" -> "ไฟล์ไม่มีนามสกุล"
+                    extension == "ไม่มีนามสกุล" ->
+                        "ไฟล์ไม่มีนามสกุล"
                     else -> "นามสกุล: .$extension"
                 }
 
@@ -210,6 +217,7 @@ class MainActivity : Activity() {
 
                 item.setOnClickListener {
                     if (isFolder) {
+                        folderHistory.add(currentId ?: folderId)
                         currentId = id
                         showFiles()
                     } else {
@@ -217,7 +225,6 @@ class MainActivity : Activity() {
                     }
                 }
             }
-
         } catch (_: Exception) {
             status.text = "อ่านโฟลเดอร์ไม่สำเร็จ"
             addMessage("ลองเลือกโฟลเดอร์อื่น")
@@ -226,7 +233,11 @@ class MainActivity : Activity() {
         updateBackButton()
     }
 
-    private fun openFile(id: String, name: String, mime: String) {
+    private fun openFile(
+        id: String,
+        name: String,
+        mime: String
+    ) {
         val tree = treeUri ?: return
         val uri = DocumentsContract.buildDocumentUriUsingTree(tree, id)
 
@@ -257,11 +268,30 @@ class MainActivity : Activity() {
             val input = contentResolver.openInputStream(uri)
                 ?: throw Exception("เปิดไฟล์ไม่ได้")
 
-            val bytes = input.use {
-                it.readNBytes(1024 * 1024 + 1)
+            // อ่านไม่เกิน 1 MB + 1 byte โดยไม่ใช้ readNBytes()
+            val bytes = input.use { stream ->
+                val output = ByteArrayOutputStream()
+                val buffer = ByteArray(8192)
+
+                while (output.size() <= maxFileSize) {
+                    val remaining =
+                        maxFileSize + 1 - output.size()
+                    if (remaining <= 0) break
+
+                    val count = stream.read(
+                        buffer,
+                        0,
+                        minOf(buffer.size, remaining)
+                    )
+
+                    if (count == -1) break
+                    output.write(buffer, 0, count)
+                }
+
+                output.toByteArray()
             }
 
-            if (bytes.size > 1024 * 1024) {
+            if (bytes.size > maxFileSize) {
                 Toast.makeText(
                     this,
                     "ไฟล์ใหญ่เกิน 1 MB",
@@ -270,10 +300,8 @@ class MainActivity : Activity() {
                 return
             }
 
-            val text = String(bytes, Charsets.UTF_8)
-            showText(name, text)
-
-        } catch (e: Exception) {
+            showText(name, String(bytes, Charsets.UTF_8))
+        } catch (_: Exception) {
             Toast.makeText(
                 this,
                 "เปิดไฟล์ไม่สำเร็จ",
@@ -305,51 +333,49 @@ class MainActivity : Activity() {
         updateBackButton()
     }
 
-    
-private fun goBack() {
-    val tree = treeUri ?: return
-    val id = currentId ?: return
-    val rootId = DocumentsContract.getTreeDocumentId(tree)
-
-    if (id == rootId) {
-        status.text = "อยู่ที่โฟลเดอร์เริ่มต้นแล้ว"
-        return
-    }
-
-    try {
-        val uri = DocumentsContract.buildDocumentUriUsingTree(
-            tree, id
-        )
-
-        val parentUri = DocumentsContract.buildDocumentUriUsingTree(
-            tree, rootId
-        )
-
-        val path = DocumentsContract.findDocumentPath(
-            contentResolver, uri
-        )
-
-        val parentPath = DocumentsContract.findDocumentPath(
-            contentResolver, parentUri
-        )
-
-        val currentSegments = path?.path?.filter { it.isNotEmpty() }
-        val rootSegments = parentPath?.path?.filter { it.isNotEmpty() }
-
-        currentId = if (
-            currentSegments != null &&
-            rootSegments != null &&
-            currentSegments.size > rootSegments.size
-        ) {
-            val parentSegments = currentSegments.dropLast(1)
-            parentSegments.lastOrNull() ?: rootId
+    private fun goBack() {
+        if (folderHistory.isNotEmpty()) {
+            currentId = folderHistory.removeAt(
+                folderHistory.lastIndex
+            )
+            showFiles()
         } else {
-            rootId
+            status.text = "อยู่ที่โฟลเดอร์เริ่มต้นแล้ว"
         }
 
-        showFiles()
-    } catch (_: Exception) {
-        currentId = rootId
-        showFiles()
+        updateBackButton()
+    }
+
+    private fun addMessage(message: String) {
+        val text = TextView(this)
+        text.text = message
+        text.textSize = 15f
+        text.setTextColor(0xFFCBD5E1.toInt())
+        text.setPadding(12, 16, 12, 16)
+        list.addView(text)
+    }
+
+    private fun formatSize(bytes: Long): String {
+        return when {
+            bytes < 1024 -> "$bytes B"
+            bytes < 1024 * 1024 ->
+                String.format(Locale.US, "%.1f KB", bytes / 1024.0)
+            else ->
+                String.format(
+                    Locale.US,
+                    "%.1f MB",
+                    bytes / (1024.0 * 1024.0)
+                )
+        }
+    }
+
+    private fun updateBackButton() {
+        backButton.text = if (viewingFile) {
+            "⬅️ กลับไปยังรายการไฟล์"
+        } else {
+            "⬅️ ย้อนกลับ"
+        }
+
+        backButton.isEnabled = treeUri != null
     }
 }
