@@ -7,7 +7,6 @@ import android.content.Intent
 import android.net.Uri
 import android.provider.DocumentsContract
 import android.view.Gravity
-import android.view.View
 import android.view.ViewGroup
 import android.widget.Button
 import android.widget.LinearLayout
@@ -24,6 +23,8 @@ class MainActivity : Activity() {
 
     private var treeUri: Uri? = null
     private var currentId: String? = null
+    private var viewingFile = false
+
     private val folderRequest = 200
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -76,7 +77,12 @@ class MainActivity : Activity() {
         }
 
         backButton.setOnClickListener {
-            goBack()
+            if (viewingFile) {
+                viewingFile = false
+                showFiles()
+            } else {
+                goBack()
+            }
         }
 
         setContentView(root)
@@ -105,22 +111,19 @@ class MainActivity : Activity() {
 
             treeUri = uri
             currentId = DocumentsContract.getTreeDocumentId(uri)
+            viewingFile = false
             showFiles()
         }
     }
 
     private fun showFiles() {
         list.removeAllViews()
+        viewingFile = false
 
         val tree = treeUri ?: return
         val folderId = currentId ?: return
 
         try {
-            val parentUri =
-                DocumentsContract.buildDocumentUriUsingTree(
-                    tree, folderId
-                )
-
             val childrenUri =
                 DocumentsContract.buildChildDocumentsUriUsingTree(
                     tree, folderId
@@ -142,8 +145,11 @@ class MainActivity : Activity() {
                     val id = cursor.getString(0) ?: continue
                     val name = cursor.getString(1) ?: "ไม่มีชื่อ"
                     val mime = cursor.getString(2) ?: ""
-                    val size = if (cursor.isNull(3)) 0L
-                               else cursor.getLong(3)
+                    val size = if (cursor.isNull(3)) {
+                        0L
+                    } else {
+                        cursor.getLong(3)
+                    }
 
                     rows.add(
                         arrayOf(id, name, mime, size.toString())
@@ -152,7 +158,7 @@ class MainActivity : Activity() {
             }
 
             rows.sortBy { it[1].lowercase(Locale.ROOT) }
-            status.text = "โฟลเดอร์: ${rows.size} รายการ"
+            status.text = "พบ ${rows.size} รายการ"
 
             if (rows.isEmpty()) {
                 addMessage("โฟลเดอร์นี้ว่าง")
@@ -163,13 +169,30 @@ class MainActivity : Activity() {
                 val name = row[1]
                 val mime = row[2]
                 val size = row[3].toLongOrNull() ?: 0L
+
                 val isFolder =
                     mime == DocumentsContract.Document.MIME_TYPE_DIR
 
+                val extension = if (isFolder) {
+                    ""
+                } else {
+                    name.substringAfterLast('.', "")
+                        .takeIf { name.contains(".") && it.isNotBlank() }
+                        ?: "ไม่มีนามสกุล"
+                }
+
+                val typeText = when {
+                    isFolder -> "โฟลเดอร์"
+                    extension == "ไม่มีนามสกุล" -> "ไฟล์ไม่มีนามสกุล"
+                    else -> "นามสกุล: .$extension"
+                }
+
                 val item = TextView(this)
-                item.text = (if (isFolder) "📁  " else "📄  ") +
+                item.text =
+                    (if (isFolder) "📁  " else "📄  ") +
                     name + "\n    " +
-                    if (isFolder) "โฟลเดอร์" else formatSize(size)
+                    if (isFolder) typeText
+                    else "$typeText • ${formatSize(size)}"
 
                 item.textSize = 16f
                 item.setTextColor(-1)
@@ -195,7 +218,7 @@ class MainActivity : Activity() {
                 }
             }
 
-        } catch (e: Exception) {
+        } catch (_: Exception) {
             status.text = "อ่านโฟลเดอร์ไม่สำเร็จ"
             addMessage("ลองเลือกโฟลเดอร์อื่น")
         }
@@ -205,52 +228,55 @@ class MainActivity : Activity() {
 
     private fun openFile(id: String, name: String, mime: String) {
         val tree = treeUri ?: return
+        val uri = DocumentsContract.buildDocumentUriUsingTree(tree, id)
 
-        val uri = DocumentsContract.buildDocumentUriUsingTree(
-            tree, id
+        val extension = name.substringAfterLast('.', "")
+            .lowercase(Locale.ROOT)
+
+        val textExtensions = setOf(
+            "txt", "html", "htm", "xml", "json", "kt",
+            "java", "gradle", "md", "log", "yml", "yaml",
+            "css", "js", "csv", "properties", "sh", "py"
         )
+
+        val isText = mime.startsWith("text/") ||
+            extension in textExtensions ||
+            mime == "application/json" ||
+            mime == "application/xml"
+
+        if (!isText) {
+            Toast.makeText(
+                this,
+                "ไฟล์ชนิดนี้ยังไม่มีตัวอ่านในแอป",
+                Toast.LENGTH_LONG
+            ).show()
+            return
+        }
 
         try {
             val input = contentResolver.openInputStream(uri)
                 ?: throw Exception("เปิดไฟล์ไม่ได้")
 
-            val bytes = input.use { it.readNBytes(1024 * 1024 + 1) }
+            val bytes = input.use {
+                it.readNBytes(1024 * 1024 + 1)
+            }
 
             if (bytes.size > 1024 * 1024) {
                 Toast.makeText(
-                    this, "ไฟล์ใหญ่เกิน 1 MB สำหรับตัวอ่านนี้",
+                    this,
+                    "ไฟล์ใหญ่เกิน 1 MB",
                     Toast.LENGTH_LONG
                 ).show()
                 return
             }
 
             val text = String(bytes, Charsets.UTF_8)
-            val isText = mime.startsWith("text/") ||
-                name.endsWith(".txt", true) ||
-                name.endsWith(".html", true) ||
-                name.endsWith(".xml", true) ||
-                name.endsWith(".json", true) ||
-                name.endsWith(".kt", true) ||
-                name.endsWith(".gradle", true) ||
-                name.endsWith(".md", true) ||
-                name.endsWith(".log", true) ||
-                name.endsWith(".yml", true) ||
-                name.endsWith(".yaml", true)
+            showText(name, text)
 
-            if (isText) {
-                showText(name, text)
-            } else {
-                val viewIntent = Intent(Intent.ACTION_VIEW).apply {
-                    setDataAndType(uri, mime.ifBlank { "*/*" })
-                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                }
-                startActivity(
-                    Intent.createChooser(viewIntent, "เปิดไฟล์ด้วย")
-                )
-            }
         } catch (e: Exception) {
             Toast.makeText(
-                this, "เปิดไฟล์ไม่สำเร็จ: ${e.message}",
+                this,
+                "เปิดไฟล์ไม่สำเร็จ",
                 Toast.LENGTH_LONG
             ).show()
         }
@@ -258,6 +284,7 @@ class MainActivity : Activity() {
 
     private fun showText(name: String, text: String) {
         list.removeAllViews()
+        viewingFile = true
 
         val heading = TextView(this)
         heading.text = "📄 $name"
@@ -274,10 +301,8 @@ class MainActivity : Activity() {
         content.setPadding(8, 8, 8, 20)
         list.addView(content)
 
-        status.text = "โหมดอ่านไฟล์ (ยังแก้ไขไม่ได้)"
-
-        backButton.text = "⬅️ กลับไปยังรายการไฟล์"
-        backButton.setOnClickListener { showFiles() }
+        status.text = "กำลังอ่าน: $name"
+        updateBackButton()
     }
 
     private fun goBack() {
@@ -294,12 +319,17 @@ class MainActivity : Activity() {
             val uri = DocumentsContract.buildDocumentUriUsingTree(
                 tree, id
             )
-            val parentId = DocumentsContract.findDocumentPath(
+            val path = DocumentsContract.findDocumentPath(
                 contentResolver, uri
-            )?.path?.dropLast(1)?.lastOrNull()
+            )?.path
 
-            if (parentId != null) currentId = parentId
-            else currentId = rootId
+            val parts = path?.split("/")?.filter { it.isNotEmpty() }
+
+            currentId = if (parts != null && parts.size > 1) {
+                parts.dropLast(1).joinToString("/")
+            } else {
+                rootId
+            }
 
             showFiles()
         } catch (_: Exception) {
@@ -309,7 +339,11 @@ class MainActivity : Activity() {
     }
 
     private fun updateBackButton() {
-        backButton.text = "⬅️ ย้อนกลับ"
+        backButton.text = if (viewingFile) {
+            "⬅️ กลับไปยังรายการไฟล์"
+        } else {
+            "⬅️ ย้อนกลับ"
+        }
     }
 
     private fun addMessage(message: String) {
@@ -323,9 +357,13 @@ class MainActivity : Activity() {
 
     private fun formatSize(size: Long): String {
         if (size < 1024) return "$size B"
+
         if (size < 1024 * 1024) {
-            return String.format(Locale.US, "%.1f KB", size / 1024.0)
+            return String.format(
+                Locale.US, "%.1f KB", size / 1024.0
+            )
         }
+
         return String.format(
             Locale.US, "%.2f MB",
             size / (1024.0 * 1024.0)
