@@ -305,68 +305,51 @@ class MainActivity : Activity() {
         updateBackButton()
     }
 
-    private fun goBack() {
-        val tree = treeUri ?: return
-        val id = currentId ?: return
-        val rootId = DocumentsContract.getTreeDocumentId(tree)
+    
+private fun goBack() {
+    val tree = treeUri ?: return
+    val id = currentId ?: return
+    val rootId = DocumentsContract.getTreeDocumentId(tree)
 
-        if (id == rootId) {
-            status.text = "อยู่ที่โฟลเดอร์เริ่มต้นแล้ว"
-            return
-        }
-
-        try {
-            val uri = DocumentsContract.buildDocumentUriUsingTree(
-                tree, id
-            )
-            val path = DocumentsContract.findDocumentPath(
-                contentResolver, uri
-            )?.path
-
-            val parts = path?.split("/")?.filter { it.isNotEmpty() }
-
-            currentId = if (parts != null && parts.size > 1) {
-                parts.dropLast(1).joinToString("/")
-            } else {
-                rootId
-            }
-
-            showFiles()
-        } catch (_: Exception) {
-            currentId = rootId
-            showFiles()
-        }
+    if (id == rootId) {
+        status.text = "อยู่ที่โฟลเดอร์เริ่มต้นแล้ว"
+        return
     }
 
-    private fun updateBackButton() {
-        backButton.text = if (viewingFile) {
-            "⬅️ กลับไปยังรายการไฟล์"
-        } else {
-            "⬅️ ย้อนกลับ"
-        }
-    }
-
-    private fun addMessage(message: String) {
-        val text = TextView(this)
-        text.text = message
-        text.textSize = 16f
-        text.setTextColor(0xFFBBBBBB.toInt())
-        text.setPadding(12, 20, 12, 20)
-        list.addView(text)
-    }
-
-    private fun formatSize(size: Long): String {
-        if (size < 1024) return "$size B"
-
-        if (size < 1024 * 1024) {
-            return String.format(
-                Locale.US, "%.1f KB", size / 1024.0
-            )
-        }
-
-        return String.format(
-            Locale.US, "%.2f MB",
-            size / (1024.0 * 1024.0)
+    try {
+        val uri = DocumentsContract.buildDocumentUriUsingTree(
+            tree, id
         )
+
+        val parentUri = DocumentsContract.buildDocumentUriUsingTree(
+            tree, rootId
+        )
+
+        val path = DocumentsContract.findDocumentPath(
+            contentResolver, uri
+        )
+
+        val parentPath = DocumentsContract.findDocumentPath(
+            contentResolver, parentUri
+        )
+
+        val currentSegments = path?.path?.filter { it.isNotEmpty() }
+        val rootSegments = parentPath?.path?.filter { it.isNotEmpty() }
+
+        currentId = if (
+            currentSegments != null &&
+            rootSegments != null &&
+            currentSegments.size > rootSegments.size
+        ) {
+            val parentSegments = currentSegments.dropLast(1)
+            parentSegments.lastOrNull() ?: rootId
+        } else {
+            rootId
+        }
+
+        showFiles()
+    } catch (_: Exception) {
+        currentId = rootId
+        showFiles()
     }
 }
